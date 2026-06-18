@@ -1,8 +1,10 @@
+// PATH: backend/src/routes/auth.js
+
 const express = require('express');
 const router = express.Router();
 const db = require('../services/db');
 const { generateSessionToken, verifyCode } = require('../services/authUtils');
-const { isLockedOut, recordFailedAttempt, clearFailedAttempts } = require('../middleware/auth');
+const { isLockedOut, recordFailedAttempt, clearFailedAttempts } = require('../services/rateLimiter');
 
 // POST /api/auth/login — exchanges an access code for a session token.
 // Anonymous users never hit this; this is only for people who have a code.
@@ -66,6 +68,25 @@ router.post('/logout', async (req, res) => {
     console.error('[auth] Logout cleanup failed:', err.message);
   }
   res.json({ success: true });
+});
+
+// GET /api/auth/me — lets the frontend check whether a token it saved
+// (e.g. in localStorage from a previous visit) is still valid, without
+// resubmitting the access code. req.user is populated by the global
+// resolveUser middleware; null means the token is missing, malformed, or
+// was revoked (logout, regenerate, or the user being deleted).
+router.get('/me', (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not logged in.' });
+  }
+  res.json({
+    user: {
+      id: req.user._id,
+      name: req.user.name,
+      username: req.user.username,
+      role: req.user.role
+    }
+  });
 });
 
 module.exports = router;

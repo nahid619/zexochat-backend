@@ -1,8 +1,11 @@
+// PATH: backend/src/routes/admin.js
+
 const express = require('express');
 const router = express.Router();
 const db = require('../services/db');
 const { generateAccessCode, generateSessionToken, hashCode } = require('../services/authUtils');
-const { requireAdmin, isLockedOut, recordFailedAttempt, clearFailedAttempts } = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth');
+const { isLockedOut, recordFailedAttempt, clearFailedAttempts } = require('../services/rateLimiter');
 
 // POST /api/admin/login — password-based login for the admin panel.
 // Completely separate from the regular /api/auth/login (access-code) flow.
