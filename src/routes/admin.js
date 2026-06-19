@@ -188,4 +188,39 @@ router.delete('/users/:id', async (req, res) => {
   }
 });
 
+// PATCH /api/admin/users/:id — update a user's display name.
+// Only name is editable here — role/username changes aren't exposed to
+// avoid accidental privilege escalation through this endpoint.
+router.patch('/users/:id', async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required.' });
+    const updated = await db.updateUser(req.params.id, { name: name.trim() });
+    if (!updated) return res.status(404).json({ error: 'User not found.' });
+    res.json({ success: true, user: toSafeUser(updated) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update user.' });
+  }
+});
+
+// GET /api/admin/users/:id/conversations — all conversations belonging to a user
+router.get('/users/:id/conversations', async (req, res) => {
+  try {
+    const convs = await db.getConversations(req.params.id);
+    res.json(convs);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load conversations.' });
+  }
+});
+
+// GET /api/admin/conversations/:id/messages — all messages in a conversation
+router.get('/conversations/:id/messages', async (req, res) => {
+  try {
+    const msgs = await db.getMessages(req.params.id);
+    res.json(msgs);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load messages.' });
+  }
+});
+
 module.exports = router;

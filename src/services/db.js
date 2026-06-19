@@ -230,6 +230,19 @@ const db = {
     }
   },
 
+  // Update safe user fields (name only — role/username/accessCodeHash are
+  // not exposed here to avoid accidental privilege escalation).
+  updateUser: async (id, fields) => {
+    if (checkConnectionState()) {
+      const user = users.get(id);
+      if (!user) throw new Error('User not found');
+      if (fields.name) user.name = fields.name;
+      return user;
+    } else {
+      return await User.findByIdAndUpdate(id, { $set: fields }, { new: true });
+    }
+  },
+
   // Deletes the user, all their sessions, and (per the plan) cascades to
   // delete their conversations + messages rather than leaving them orphaned.
   cascadeDeleteUser: async (id) => {
