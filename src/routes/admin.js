@@ -235,4 +235,14 @@ router.get('/conversations/:id/messages', async (req, res) => {
   }
 });
 
+// DELETE /api/admin/conversations/:id — admin can delete any conversation
+router.delete('/conversations/:id', async (req, res) => {
+  try {
+    await db.deleteConversation(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete conversation.' });
+  }
+});
+
 module.exports = router;
