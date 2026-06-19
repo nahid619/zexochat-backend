@@ -1,3 +1,4 @@
+// PATH: backend/src/services/db.js
 const mongoose = require('mongoose');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
@@ -153,11 +154,11 @@ const db = {
   createUser: async ({ name, username, accessCodeHash, role = 'user' }) => {
     if (checkConnectionState()) {
       const id = 'mock_user_' + Math.random().toString(36).substring(2, 15);
-      const user = { _id: id, id, name, username, accessCodeHash, role, createdAt: new Date() };
+      const user = { _id: id, id, name, username, accessCodeHash, role, isActive: true, messageCount: 0, createdAt: new Date() };
       users.set(id, user);
       return user;
     } else {
-      return await User.create({ name, username, accessCodeHash, role });
+      return await User.create({ name, username, accessCodeHash, role, isActive: true, messageCount: 0 });
     }
   },
 
@@ -230,16 +231,28 @@ const db = {
     }
   },
 
-  // Update safe user fields (name only — role/username/accessCodeHash are
-  // not exposed here to avoid accidental privilege escalation).
+  // Update safe user fields (name + isActive — role/username/accessCodeHash
+  // are not exposed here to avoid accidental privilege escalation).
   updateUser: async (id, fields) => {
     if (checkConnectionState()) {
       const user = users.get(id);
       if (!user) throw new Error('User not found');
-      if (fields.name) user.name = fields.name;
+      if (fields.name     !== undefined) user.name     = fields.name;
+      if (fields.isActive !== undefined) user.isActive = fields.isActive;
       return user;
     } else {
       return await User.findByIdAndUpdate(id, { $set: fields }, { new: true });
+    }
+  },
+
+  // Increments the per-user message counter shown in the admin panel.
+  // Called after every successful AI response for identified users.
+  incrementMessageCount: async (id) => {
+    if (checkConnectionState()) {
+      const user = users.get(id);
+      if (user) user.messageCount = (user.messageCount || 0) + 1;
+    } else {
+      await User.findByIdAndUpdate(id, { $inc: { messageCount: 1 } });
     }
   },
 

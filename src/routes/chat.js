@@ -1,3 +1,4 @@
+// PATH: backend/src/routes/chat.js
 const express = require('express');
 const router = express.Router();
 const { routeChat } = require('../services/aiRouter');
@@ -12,6 +13,15 @@ const ANONYMOUS_MODEL = 'openai/gpt-oss-120b';
 router.post('/', async (req, res) => {
   const { userMessage, searchEnabled } = req.body;
   const preferredModel = req.user ? req.body.preferredModel : ANONYMOUS_MODEL;
+
+  // Suspended users get a clear message rather than silently falling back
+  // to anonymous tier — they need to know why their request was blocked.
+  if (req.user && req.user.isActive === false) {
+    return res.status(403).json({
+      error: 'Your access has been temporarily suspended. Please contact the admin.',
+      suspended: true
+    });
+  }
 
   if (!userMessage) {
     return res.status(400).json({ error: 'userMessage is required' });
@@ -80,6 +90,8 @@ router.post('/', async (req, res) => {
     if (req.user) {
       const assistantMsg = await db.createMessage(conversationId, 'assistant', content, modelUsed);
       await db.updateConversation(conversationId, { model: modelUsed });
+      // Fire-and-forget: don't await so the response isn't delayed by the counter write.
+      db.incrementMessageCount(req.user._id || req.user.id).catch(() => {});
       return res.json({ reply: content, modelUsed, message: assistantMsg });
     }
 

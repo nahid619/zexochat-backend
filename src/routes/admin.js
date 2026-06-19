@@ -83,11 +83,13 @@ router.use(requireAdmin);
 // Never send accessCodeHash to the client, under any circumstances.
 function toSafeUser(user) {
   return {
-    id: user._id,
-    name: user.name,
-    username: user.username,
-    role: user.role,
-    createdAt: user.createdAt
+    id:           user._id,
+    name:         user.name,
+    username:     user.username,
+    role:         user.role,
+    isActive:     user.isActive !== false, // treat undefined as true for old records
+    messageCount: user.messageCount || 0,
+    createdAt:    user.createdAt
   };
 }
 
@@ -188,14 +190,24 @@ router.delete('/users/:id', async (req, res) => {
   }
 });
 
-// PATCH /api/admin/users/:id — update a user's display name.
-// Only name is editable here — role/username changes aren't exposed to
-// avoid accidental privilege escalation through this endpoint.
+// PATCH /api/admin/users/:id — update name and/or isActive status.
+// Only these two fields are editable — role/username/accessCodeHash are
+// not exposed here to avoid accidental privilege escalation.
 router.patch('/users/:id', async (req, res) => {
   try {
-    const { name } = req.body;
-    if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required.' });
-    const updated = await db.updateUser(req.params.id, { name: name.trim() });
+    const { name, isActive } = req.body;
+    const fields = {};
+    if (name     !== undefined) fields.name     = name.trim();
+    if (isActive !== undefined) fields.isActive = Boolean(isActive);
+
+    if (Object.keys(fields).length === 0) {
+      return res.status(400).json({ error: 'Nothing to update.' });
+    }
+    if (fields.name !== undefined && !fields.name) {
+      return res.status(400).json({ error: 'Name cannot be empty.' });
+    }
+
+    const updated = await db.updateUser(req.params.id, fields);
     if (!updated) return res.status(404).json({ error: 'User not found.' });
     res.json({ success: true, user: toSafeUser(updated) });
   } catch (err) {
