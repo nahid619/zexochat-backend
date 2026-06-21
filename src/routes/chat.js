@@ -1,25 +1,54 @@
 // PATH: backend/src/routes/chat.js
-const express = require('express');
-const router = express.Router();
+const express       = require('express');
+const router        = express.Router();
 const { routeChat } = require('../services/aiRouter');
-const db = require('../services/db');
+const db            = require('../services/db');
 
-// Anonymous (unidentified) callers are locked to exactly this model — see
-// access plan §1. Enforced here, not just hidden in the frontend dropdown,
-// because a client-side-only restriction can be bypassed by anyone calling
-// this endpoint directly with curl/Postman.
 const ANONYMOUS_MODEL = 'openai/gpt-oss-120b';
 
+// ─── System prompt ─────────────────────────────────────────────────────────────
+// Builds the context injected as `role: "system"` before every conversation.
+// Each provider's caller is responsible for mapping this to its own API shape
+// (Gemini → systemInstruction, Cohere → preamble, others → native system role).
+function buildSystemPrompt({ localDateTime, timezone, searchEnabled }) {
+  const utcNow = new Date().toUTCString();
+
+  const timeBlock = (localDateTime && timezone)
+    ? `## Current date & time
+User's local time : ${localDateTime}
+User's timezone   : ${timezone}
+Server UTC time   : ${utcNow}
+
+Always use the user's local time above when answering any question about the current time, date, day of the week, or how long until/since an event. Never guess or use your training-data cutoff as the current date.`
+    : `## Current date & time
+Server UTC time: ${utcNow}
+(No client timezone was provided — use UTC as a fallback if the user asks about the time.)`;
+
+  const searchBlock = searchEnabled
+    ? `\n\n## Web search
+When this conversation's last user message contains search results labelled "Source [N]:", you MUST use those results to answer. Quote or cite the sources when relevant. If the results don't cover the question fully, say so rather than guessing.`
+    : '';
+
+  return `You are ZexoChat, a helpful and concise AI assistant.
+
+${timeBlock}${searchBlock}`;
+}
+
+// ─── Main chat endpoint ────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
-  const { userMessage, searchEnabled } = req.body;
+  const {
+    userMessage,
+    searchEnabled,
+    localDateTime,   // e.g. "Saturday, June 21, 2026 at 11:47 PM"  (from browser)
+    timezone,        // e.g. "Asia/Dhaka"                             (from browser)
+  } = req.body;
+
   const preferredModel = req.user ? req.body.preferredModel : ANONYMOUS_MODEL;
 
-  // Suspended users get a clear message rather than silently falling back
-  // to anonymous tier — they need to know why their request was blocked.
   if (req.user && req.user.isActive === false) {
     return res.status(403).json({
-      error: 'Your access has been temporarily suspended. Please contact the admin.',
-      suspended: true
+      error:     'Your access has been temporarily suspended. Please contact the admin.',
+      suspended: true,
     });
   }
 
@@ -31,11 +60,8 @@ router.post('/', async (req, res) => {
     let chatMessages;
     const conversationId = req.body.conversationId;
 
+    // ── Build conversation history ──────────────────────────────────────────
     if (req.user) {
-      // Identified user — full DB-backed persistence, scoped to their
-      // account. conversationId must already exist and must belong to them
-      // (you can't read or post into someone else's conversation just by
-      // guessing/passing their Mongo _id).
       if (!conversationId) {
         return res.status(400).json({ error: 'conversationId is required' });
       }
@@ -49,59 +75,63 @@ router.post('/', async (req, res) => {
 
       await db.createMessage(conversationId, 'user', userMessage);
       const history = await db.getMessages(conversationId);
-      chatMessages = history.map(m => ({ role: m.role, content: m.content }));
+      chatMessages  = history.map(m => ({ role: m.role, content: m.content }));
     } else {
-      // Anonymous — nothing touches the database at all (access plan §1:
-      // "chats are not persisted"). There's no server-side memory of this
-      // conversation, so the client sends the running history itself with
-      // every request; we just append the latest user turn to it.
       const clientHistory = Array.isArray(req.body.messages) ? req.body.messages : [];
       chatMessages = [...clientHistory, { role: 'user', content: userMessage }];
     }
 
-    // If chat history is very long, trim it (keeping the latest context)
-    if (chatMessages.length > 30) {
-      chatMessages = chatMessages.slice(-30);
-    }
+    // Trim very long histories (keep most-recent context)
+    if (chatMessages.length > 30) chatMessages = chatMessages.slice(-30);
 
-    // (Phase 7: Web Search integration wrapper)
-    // If search is enabled, we'll run a search check. For now, if search is enabled,
-    // we'll inject a note into the prompt. The real Tavily service will be connected in Phase 7.
+    // ── Prepend system prompt ───────────────────────────────────────────────
+    // Inserted at position 0 so it frames every call to every provider.
+    const systemPrompt = buildSystemPrompt({ localDateTime, timezone, searchEnabled });
+    chatMessages.unshift({ role: 'system', content: systemPrompt });
+
+    // ── Web search injection ────────────────────────────────────────────────
+    // Only runs when search is enabled AND a real Tavily key is configured.
+    // If the key is missing we skip silently — injecting mock results would
+    // cause the model to confidently hallucinate fake citations.
     if (searchEnabled) {
-      try {
-        const { searchWeb } = require('../services/tavily');
-        console.log(`🔍 [Chat Route] Web search requested for: "${userMessage}"`);
-        const searchResults = await searchWeb(userMessage);
+      const tavilyKey = process.env.TAVILY_API_KEY;
+      if (!tavilyKey || tavilyKey.trim().length === 0) {
+        console.warn('[chat] TAVILY_API_KEY not set — web search skipped for this request.');
+      } else {
+        try {
+          const { searchWeb }  = require('../services/tavily');
+          console.log(`🔍 [chat] Searching: "${userMessage}"`);
+          const searchResults = await searchWeb(userMessage);
 
-        if (searchResults && searchResults.trim().length > 0) {
-          const lastIndex = chatMessages.length - 1;
-          chatMessages[lastIndex].content = `Use these web search results to help answer the user's question:\n\n${searchResults}\n\nNow answer the user's question: ${userMessage}`;
+          if (searchResults && searchResults.trim().length > 0) {
+            // Inject results into the last user turn so they appear as part
+            // of the conversation, not as instructions the model might ignore.
+            const lastIdx = chatMessages.length - 1;
+            chatMessages[lastIdx].content =
+              `Here are current web search results for my question:\n\n${searchResults}\n\n` +
+              `My question: ${userMessage}`;
+          }
+        } catch (err) {
+          // Non-fatal — answer from model knowledge if search fails
+          console.error('⚠️ [chat] Web search failed:', err.message);
         }
-      } catch (err) {
-        console.error('⚠️ Tavily search service skipped or error:', err.message);
-        const lastIndex = chatMessages.length - 1;
-        chatMessages[lastIndex].content = `[Web Search Active - Mock Results Injected]\nQuery: ${userMessage}`;
       }
     }
 
-    // Query AI Router (auto-switches on 429 rate limits)
+    // ── Call AI router ──────────────────────────────────────────────────────
     const { content, modelUsed } = await routeChat(chatMessages, preferredModel);
 
     if (req.user) {
       const assistantMsg = await db.createMessage(conversationId, 'assistant', content, modelUsed);
       await db.updateConversation(conversationId, { model: modelUsed });
-      // Fire-and-forget: don't await so the response isn't delayed by the counter write.
       db.incrementMessageCount(req.user._id || req.user.id).catch(() => {});
       return res.json({ reply: content, modelUsed, message: assistantMsg });
     }
 
-    // Anonymous: nothing was saved, so there's no message doc to return —
-    // just the reply itself. The frontend appends it to its own in-memory
-    // history (and the `messages` array it sends next turn).
     return res.json({ reply: content, modelUsed });
 
   } catch (err) {
-    console.error('❌ Chat route error:', err.message);
+    console.error('❌ [chat] Route error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

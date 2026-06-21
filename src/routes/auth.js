@@ -1,13 +1,25 @@
 // PATH: backend/src/routes/auth.js
 
 const express = require('express');
-const router = express.Router();
-const db = require('../services/db');
+const router  = express.Router();
+const db      = require('../services/db');
 const { generateSessionToken, verifyCode } = require('../services/authUtils');
 const { isLockedOut, recordFailedAttempt, clearFailedAttempts } = require('../services/rateLimiter');
 
+// Helper — strips the hash and returns only what the frontend needs.
+// appearance is included so the client can restore the user's saved
+// theme / accent / background on every page load.
+function toPublicUser(user) {
+  return {
+    id:         user._id,
+    name:       user.name,
+    username:   user.username,
+    role:       user.role,
+    appearance: user.appearance || {}
+  };
+}
+
 // POST /api/auth/login — exchanges an access code for a session token.
-// Anonymous users never hit this; this is only for people who have a code.
 router.post('/login', async (req, res) => {
   const ip = req.ip;
   const { code } = req.body;
@@ -21,9 +33,6 @@ router.post('/login', async (req, res) => {
   }
 
   try {
-    // Can't look up a user "by code" directly since only the hash is stored —
-    // bcrypt-compare the submitted code against each user's hash in turn.
-    // Fine at personal/small-team scale (see db.js getAllUsersForLogin).
     const allUsers = await db.getAllUsersForLogin();
     let matchedUser = null;
     for (const user of allUsers) {
@@ -42,23 +51,14 @@ router.post('/login', async (req, res) => {
     const token = generateSessionToken();
     await db.createSession(matchedUser._id, token);
 
-    res.json({
-      token,
-      user: {
-        id: matchedUser._id,
-        name: matchedUser.name,
-        username: matchedUser.username,
-        role: matchedUser.role
-      }
-    });
+    res.json({ token, user: toPublicUser(matchedUser) });
   } catch (err) {
     console.error('[auth] Login failed:', err);
     res.status(500).json({ error: 'Login failed. Please try again.' });
   }
 });
 
-// POST /api/auth/logout — invalidates the current session token, if any.
-// Always returns success — logging out an already-invalid token is harmless.
+// POST /api/auth/logout — invalidates the current session token.
 router.post('/logout', async (req, res) => {
   try {
     const authHeader = req.headers.authorization || '';
@@ -70,23 +70,38 @@ router.post('/logout', async (req, res) => {
   res.json({ success: true });
 });
 
-// GET /api/auth/me — lets the frontend check whether a token it saved
-// (e.g. in localStorage from a previous visit) is still valid, without
-// resubmitting the access code. req.user is populated by the global
-// resolveUser middleware; null means the token is missing, malformed, or
-// was revoked (logout, regenerate, or the user being deleted).
+// GET /api/auth/me — validates a stored token and returns the current user.
+// appearance is included so the frontend can re-apply preferences without
+// a separate request.
 router.get('/me', (req, res) => {
   if (!req.user) {
     return res.status(401).json({ error: 'Not logged in.' });
   }
-  res.json({
-    user: {
-      id: req.user._id,
-      name: req.user.name,
-      username: req.user.username,
-      role: req.user.role
-    }
-  });
+  res.json({ user: toPublicUser(req.user) });
+});
+
+// PATCH /api/auth/appearance — persists the user's appearance preferences.
+// Called automatically (debounced) whenever the user changes their theme,
+// accent colour, or background palette. Silent on failure — a missed save
+// is not worth interrupting the chat experience for.
+router.patch('/appearance', async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not logged in.' });
+  }
+
+  const { appearance } = req.body;
+
+  if (!appearance || typeof appearance !== 'object' || Array.isArray(appearance)) {
+    return res.status(400).json({ error: 'appearance must be a plain object.' });
+  }
+
+  try {
+    await db.updateUser(req.user._id, { appearance });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[auth] Failed to save appearance:', err.message);
+    res.status(500).json({ error: 'Failed to save appearance.' });
+  }
 });
 
 module.exports = router;
