@@ -20,7 +20,7 @@ const MODELS = [
   { id: 'gemini-2.5-flash', provider: 'google', name: 'Gemini 2.5 Flash', score: 8.0, rpdFree: 250 },
   { id: 'gemini-3.1-flash-lite', provider: 'google', name: 'Gemini 3.1 Flash-Lite', score: 7.7, rpdFree: 1000 },
   { id: 'gemini-2.5-flash-lite', provider: 'google', name: 'Gemini 2.5 Flash-Lite', score: 7.4, rpdFree: 1000 },
-  { id: 'gemini-2.5-pro', provider: 'google', name: 'Gemini 2.5 Pro', score: 8.9, rpdFree: 50 },
+  // gemini-2.5-pro removed — NOT on the free tier (confirmed via billing)
   { id: 'openai/gpt-oss-120b', provider: 'groq', name: 'GPT-OSS 120B (Groq)', score: 7.5, rpdFree: 1000 },
   { id: 'llama-3.3-70b-versatile', provider: 'groq', name: 'Llama 3.3 70B', score: 7.2, rpdFree: 1000 },
   { id: 'llama-4-scout', provider: 'groq', name: 'Llama 4 Scout', score: 7.2, rpdFree: 1000 },
